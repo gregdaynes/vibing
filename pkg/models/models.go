@@ -22,11 +22,13 @@ type QuestionAuthor struct {
 }
 
 type Question struct {
-	ID        int
-	AuthorID  int
-	Title     string
-	Content   string
-	CreatedAt time.Time
+	ID              int
+	AuthorID        int
+	Title           string
+	Content         string
+	CreatedAt       time.Time
+	DeletedAt       *time.Time
+	IsAuthorBlocked bool
 }
 
 type Answer struct {
@@ -40,6 +42,22 @@ type Answer struct {
 type AnswerWithEmail struct {
 	Answer
 	UserEmail string
+}
+
+type BlockedEmail struct {
+	ID        int
+	Email     string
+	BlockedAt time.Time
+	BlockedBy int // user_id of the admin who blocked
+	Reason    string
+}
+
+type BlockedEmailWithQuestions struct {
+	Email     string
+	BlockedAt time.Time
+	BlockedBy string
+	Reason    string
+	Questions []Question
 }
 
 type DB struct {
@@ -137,6 +155,7 @@ func (db *DB) MigrateDB() error {
 				title TEXT NOT NULL,
 				content TEXT NOT NULL,
 				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				deleted_at DATETIME,
 				FOREIGN KEY (author_id) REFERENCES question_authors(id)
 			)
 		`)
@@ -247,6 +266,7 @@ func (db *DB) CreateTables() error {
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			deleted_at DATETIME,
 			FOREIGN KEY (author_id) REFERENCES question_authors(id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS answers (
@@ -257,6 +277,14 @@ func (db *DB) CreateTables() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (question_id) REFERENCES questions(id),
 			FOREIGN KEY (user_id) REFERENCES users(id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS blocked_emails (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			email TEXT NOT NULL,
+			blocked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			blocked_by INTEGER NOT NULL,
+			reason TEXT,
+			FOREIGN KEY (blocked_by) REFERENCES users(id)
 		)`,
 	}
 
@@ -278,4 +306,104 @@ func HashPassword(password string) (string, error) {
 func CheckPasswordHash(password, hash string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	return err == nil
+}
+
+// Check if an email is blocked
+func (db *DB) IsEmailBlocked(email string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM blocked_emails WHERE email = ?)", email).Scan(&exists)
+	return exists, err
+}
+
+// Block an email
+func (db *DB) BlockEmail(email string, blockedBy int, reason string) error {
+	// Start a transaction since we're doing multiple operations
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+
+	// Insert into blocked_emails
+	_, err = tx.Exec(`
+		INSERT INTO blocked_emails (email, blocked_by, reason)
+		VALUES (?, ?, ?)
+	`, email, blockedBy, reason)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Soft delete all questions from this author
+	_, err = tx.Exec(`
+		UPDATE questions 
+		SET deleted_at = CURRENT_TIMESTAMP 
+		WHERE author_id IN (
+			SELECT id FROM question_authors WHERE email = ?
+		) AND deleted_at IS NULL
+	`, email)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// Soft delete a question
+func (db *DB) SoftDeleteQuestion(questionID int) error {
+	_, err := db.Exec(`
+		UPDATE questions 
+		SET deleted_at = CURRENT_TIMESTAMP 
+		WHERE id = ? AND deleted_at IS NULL
+	`, questionID)
+	return err
+}
+
+// Get blocked emails with blocker information and their questions
+func (db *DB) GetBlockedEmails() ([]BlockedEmailWithQuestions, error) {
+	// First get all blocked emails
+	rows, err := db.Query(`
+		SELECT be.email, be.blocked_at, u.email as blocked_by, be.reason
+		FROM blocked_emails be
+		JOIN users u ON be.blocked_by = u.id
+		ORDER BY be.blocked_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var blockedEmails []BlockedEmailWithQuestions
+
+	for rows.Next() {
+		var be BlockedEmailWithQuestions
+		if err := rows.Scan(&be.Email, &be.BlockedAt, &be.BlockedBy, &be.Reason); err != nil {
+			return nil, err
+		}
+
+		// For each blocked email, get their questions
+		questionRows, err := db.Query(`
+			SELECT q.id, q.author_id, q.title, q.content, q.created_at, q.deleted_at
+			FROM questions q
+			JOIN question_authors qa ON q.author_id = qa.id
+			WHERE qa.email = ?
+			ORDER BY q.created_at DESC
+		`, be.Email)
+		if err != nil {
+			return nil, err
+		}
+		defer questionRows.Close()
+
+		for questionRows.Next() {
+			var q Question
+			if err := questionRows.Scan(&q.ID, &q.AuthorID, &q.Title, &q.Content, &q.CreatedAt, &q.DeletedAt); err != nil {
+				return nil, err
+			}
+			be.Questions = append(be.Questions, q)
+		}
+
+		blockedEmails = append(blockedEmails, be)
+	}
+
+	return blockedEmails, nil
 }

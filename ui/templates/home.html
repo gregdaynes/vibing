@@ -5,12 +5,23 @@
     {{if .Data}}
         {{range .Data}}
         <div class="bg-white p-4 rounded-lg shadow">
-            <h2 class="text-xl font-semibold mb-2">
-                <a href="/question/{{.ID}}" class="text-blue-600 hover:text-blue-800">{{.Title}}</a>
-            </h2>
+            <div class="flex justify-between items-start">
+                <h2 class="text-xl font-semibold mb-2">
+                    <a href="/question/{{.ID}}" class="text-blue-600 hover:text-blue-800">{{.Title}}</a>
+                    {{if .DeletedAt}}
+                        <span class="ml-2 px-2 py-1 text-xs bg-red-100 text-red-800 rounded">Deleted</span>
+                    {{end}}
+                    {{if .IsAuthorBlocked}}
+                        <span class="ml-2 px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded">Blocked User</span>
+                    {{end}}
+                </h2>
+            </div>
             <p class="text-gray-600">{{.Content}}</p>
             <div class="mt-2 text-sm text-gray-500">
                 Posted on {{.CreatedAt.Format "Jan 02, 2006 at 15:04"}}
+                {{if .DeletedAt}}
+                    <span class="text-red-600"> • Deleted on {{.DeletedAt.Format "Jan 02, 2006 at 15:04"}}</span>
+                {{end}}
             </div>
         </div>
         {{end}}

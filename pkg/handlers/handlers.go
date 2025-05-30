@@ -65,15 +65,24 @@ func (app *Application) Home(w http.ResponseWriter, r *http.Request) {
 
 	if isLoggedIn {
 		rows, err = app.DB.Query(`
-			SELECT q.id, q.author_id, q.title, q.content, q.created_at 
+			SELECT q.id, q.author_id, q.title, q.content, q.created_at, q.deleted_at,
+				   EXISTS(SELECT 1 FROM blocked_emails be 
+						 JOIN question_authors qa ON qa.email = be.email 
+						 WHERE qa.id = q.author_id) as is_author_blocked
 			FROM questions q 
+			WHERE (q.deleted_at IS NULL OR 
+				   (q.deleted_at IS NOT NULL AND q.deleted_at > datetime('now', '-14 days')))
 			ORDER BY q.created_at DESC
 		`)
 	} else {
 		rows, err = app.DB.Query(`
-			SELECT DISTINCT q.id, q.author_id, q.title, q.content, q.created_at 
+			SELECT DISTINCT q.id, q.author_id, q.title, q.content, q.created_at, q.deleted_at,
+				   EXISTS(SELECT 1 FROM blocked_emails be 
+						 JOIN question_authors qa ON qa.email = be.email 
+						 WHERE qa.id = q.author_id) as is_author_blocked
 			FROM questions q 
 			INNER JOIN answers a ON q.id = a.question_id
+			WHERE q.deleted_at IS NULL
 			ORDER BY q.created_at DESC
 		`)
 	}
@@ -88,7 +97,7 @@ func (app *Application) Home(w http.ResponseWriter, r *http.Request) {
 	questions := []models.Question{}
 	for rows.Next() {
 		var q models.Question
-		err = rows.Scan(&q.ID, &q.AuthorID, &q.Title, &q.Content, &q.CreatedAt)
+		err = rows.Scan(&q.ID, &q.AuthorID, &q.Title, &q.Content, &q.CreatedAt, &q.DeletedAt, &q.IsAuthorBlocked)
 		if err != nil {
 			log.Printf("Error scanning question: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -263,11 +272,39 @@ func (app *Application) ViewQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isLoggedIn, _, _ := app.getSessionData(r)
+
 	var question models.Question
-	err = app.DB.QueryRow(`
-		SELECT id, author_id, title, content, created_at
-		FROM questions WHERE id = ?
-	`, id).Scan(&question.ID, &question.AuthorID, &question.Title, &question.Content, &question.CreatedAt)
+	var query string
+	if isLoggedIn {
+		query = `
+			SELECT q.id, q.author_id, q.title, q.content, q.created_at, q.deleted_at,
+				   EXISTS(SELECT 1 FROM blocked_emails be 
+						 JOIN question_authors qa ON qa.email = be.email 
+						 WHERE qa.id = q.author_id) as is_author_blocked
+			FROM questions q
+			WHERE q.id = ? AND (q.deleted_at IS NULL OR q.deleted_at > datetime('now', '-14 days'))
+		`
+	} else {
+		query = `
+			SELECT q.id, q.author_id, q.title, q.content, q.created_at, q.deleted_at,
+				   EXISTS(SELECT 1 FROM blocked_emails be 
+						 JOIN question_authors qa ON qa.email = be.email 
+						 WHERE qa.id = q.author_id) as is_author_blocked
+			FROM questions q
+			WHERE q.id = ? AND q.deleted_at IS NULL
+		`
+	}
+
+	err = app.DB.QueryRow(query, id).Scan(
+		&question.ID,
+		&question.AuthorID,
+		&question.Title,
+		&question.Content,
+		&question.CreatedAt,
+		&question.DeletedAt,
+		&question.IsAuthorBlocked,
+	)
 
 	if err != nil {
 		log.Printf("Error finding question: %v", err)
@@ -275,18 +312,19 @@ func (app *Application) ViewQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check visibility permissions
-	hasAnswers, err := app.hasAnswers(id)
-	if err != nil {
-		log.Printf("Error checking answers: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Check visibility permissions for non-deleted questions
+	if question.DeletedAt == nil {
+		hasAnswers, err := app.hasAnswers(id)
+		if err != nil {
+			log.Printf("Error checking answers: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-	isLoggedIn, _, _ := app.getSessionData(r)
-	if !isLoggedIn && !hasAnswers {
-		http.Error(w, "You must be logged in to view unanswered questions", http.StatusForbidden)
-		return
+		if !isLoggedIn && !hasAnswers {
+			http.Error(w, "You must be logged in to view unanswered questions", http.StatusForbidden)
+			return
+		}
 	}
 
 	// Get author's email
@@ -465,9 +503,26 @@ func (app *Application) SubmitQuestion(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("email")
 	content := r.FormValue("content")
 
+	// Check if email is blocked
+	isBlocked, err := app.DB.IsEmailBlocked(email)
+	if err != nil {
+		log.Printf("Error checking if email is blocked: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if isBlocked {
+		// Redirect with error message
+		redirectURL := fmt.Sprintf("/?msg_type=error&msg_title=%s&msg_content=%s",
+			url.QueryEscape("Submission Blocked"),
+			url.QueryEscape("This email address has been blocked from submitting questions."))
+		http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+		return
+	}
+
 	// First, create or get the question author
 	var authorID int
-	err := app.DB.QueryRow("SELECT id FROM question_authors WHERE email = ?", email).Scan(&authorID)
+	err = app.DB.QueryRow("SELECT id FROM question_authors WHERE email = ?", email).Scan(&authorID)
 	if err == sql.ErrNoRows {
 		// Create new question author
 		result, err := app.DB.Exec("INSERT INTO question_authors (email) VALUES (?)", email)
@@ -516,4 +571,97 @@ func (app *Application) Logout(w http.ResponseWriter, r *http.Request) {
 	session.Options.MaxAge = -1 // This will delete the cookie
 	session.Save(r, w)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (app *Application) DeleteQuestion(w http.ResponseWriter, r *http.Request) {
+	// Check if user is logged in
+	isLoggedIn, _, _ := app.getSessionData(r)
+	if !isLoggedIn {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	vars := mux.Vars(r)
+	questionID, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		http.Error(w, "Invalid question ID", http.StatusBadRequest)
+		return
+	}
+
+	err = app.DB.SoftDeleteQuestion(questionID)
+	if err != nil {
+		log.Printf("Error deleting question: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect with success message
+	redirectURL := fmt.Sprintf("/?msg_type=success&msg_title=%s&msg_content=%s",
+		url.QueryEscape("Question Deleted"),
+		url.QueryEscape("The question has been successfully deleted."))
+
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+}
+
+func (app *Application) BlockEmail(w http.ResponseWriter, r *http.Request) {
+	// Check if user is logged in
+	isLoggedIn, userID, _ := app.getSessionData(r)
+	if !isLoggedIn {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	email := r.FormValue("email")
+	reason := r.FormValue("reason")
+
+	if email == "" {
+		http.Error(w, "Email is required", http.StatusBadRequest)
+		return
+	}
+
+	// Block the email
+	err := app.DB.BlockEmail(email, userID, reason)
+	if err != nil {
+		log.Printf("Error blocking email: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect with success message
+	redirectURL := fmt.Sprintf("/?msg_type=success&msg_title=%s&msg_content=%s",
+		url.QueryEscape("Email Blocked"),
+		url.QueryEscape(fmt.Sprintf("The email address %s has been blocked.", email)))
+
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+}
+
+func (app *Application) BlockedEmails(w http.ResponseWriter, r *http.Request) {
+	// Check if user is logged in
+	isLoggedIn, _, _ := app.getSessionData(r)
+	if !isLoggedIn {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	blockedEmails, err := app.DB.GetBlockedEmails()
+	if err != nil {
+		log.Printf("Error getting blocked emails: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := app.newTemplateData(r)
+	data.Data = blockedEmails
+
+	err = app.Templates["blocked_emails.html"].ExecuteTemplate(w, "layout", data)
+	if err != nil {
+		log.Printf("Error executing template: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }

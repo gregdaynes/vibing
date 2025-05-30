@@ -82,6 +82,7 @@ func main() {
 		"ask.html",
 		"question.html",
 		"ask_form.html",
+		"blocked_emails.html",
 	}
 
 	for _, tf := range templateFiles {
@@ -116,6 +117,9 @@ func main() {
 	r.HandleFunc("/submit-question", app.SubmitQuestion).Methods("POST")
 	r.HandleFunc("/question/{id:[0-9]+}", app.ViewQuestion).Methods("GET")
 	r.HandleFunc("/question/{id:[0-9]+}/answer", app.AnswerQuestion).Methods("POST")
+	r.HandleFunc("/question/{id:[0-9]+}/delete", app.DeleteQuestion).Methods("POST")
+	r.HandleFunc("/block-email", app.BlockEmail).Methods("POST")
+	r.HandleFunc("/blocked-emails", app.BlockedEmails).Methods("GET")
 
 	// Serve static files
 	fileServer := http.FileServer(http.Dir("./static/"))

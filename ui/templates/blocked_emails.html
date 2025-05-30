@@ -1,0 +1,76 @@
+{{define "content"}}
+<div class="max-w-4xl mx-auto">
+    <div class="bg-white p-6 rounded-lg shadow-lg mb-6">
+        <h1 class="text-2xl font-bold mb-6">Blocked Email Addresses</h1>
+        
+        <!-- Block new email form -->
+        <form method="POST" action="/block-email" class="mb-8">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="col-span-1">
+                    <label for="email" class="block text-sm font-medium text-gray-700">Email Address</label>
+                    <input type="email" name="email" id="email" required
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                </div>
+                <div class="col-span-1 md:col-span-2">
+                    <label for="reason" class="block text-sm font-medium text-gray-700">Reason</label>
+                    <input type="text" name="reason" id="reason"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                </div>
+            </div>
+            <div class="mt-4">
+                <button type="submit" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">
+                    Block Email Address
+                </button>
+            </div>
+        </form>
+
+        <!-- List of blocked emails -->
+        <div class="space-y-6">
+            {{if .Data}}
+                {{range .Data}}
+                    <div class="border rounded-lg p-4">
+                        <div class="mb-4">
+                            <h3 class="text-lg font-semibold">{{.Email}}</h3>
+                            <p class="text-sm text-gray-600">
+                                Blocked by {{maskEmail .BlockedBy}} on {{.BlockedAt.Format "Jan 02, 2006 at 15:04"}}
+                            </p>
+                            {{if .Reason}}
+                                <p class="mt-2 text-gray-700">Reason: {{.Reason}}</p>
+                            {{end}}
+                        </div>
+
+                        {{if .Questions}}
+                            <div class="mt-4">
+                                <h4 class="text-md font-semibold mb-2">Questions from this user:</h4>
+                                <div class="space-y-3 pl-4">
+                                    {{range .Questions}}
+                                        <div class="border-l-2 border-gray-200 pl-4">
+                                            <h5 class="font-medium">
+                                                <a href="/question/{{.ID}}" class="text-blue-600 hover:text-blue-800">{{.Title}}</a>
+                                                {{if .DeletedAt}}
+                                                    <span class="ml-2 px-2 py-1 text-xs bg-red-100 text-red-800 rounded">Deleted</span>
+                                                {{end}}
+                                            </h5>
+                                            <p class="text-sm text-gray-600 mt-1">{{.Content}}</p>
+                                            <p class="text-xs text-gray-500 mt-1">
+                                                Posted on {{.CreatedAt.Format "Jan 02, 2006 at 15:04"}}
+                                                {{if .DeletedAt}}
+                                                    <span class="text-red-600"> • Deleted on {{.DeletedAt.Format "Jan 02, 2006 at 15:04"}}</span>
+                                                {{end}}
+                                            </p>
+                                        </div>
+                                    {{end}}
+                                </div>
+                            </div>
+                        {{else}}
+                            <p class="text-sm text-gray-500 mt-2">No questions from this user</p>
+                        {{end}}
+                    </div>
+                {{end}}
+            {{else}}
+                <p class="text-gray-600">No email addresses have been blocked yet.</p>
+            {{end}}
+        </div>
+    </div>
+</div>
+{{end}} 

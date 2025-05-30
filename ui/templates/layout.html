@@ -21,6 +21,7 @@
                 <div class="flex items-center space-x-3">
                     <a href="/ask" class="py-2 px-4 bg-blue-500 text-white rounded hover:bg-blue-600 transition duration-300">Ask Question</a>
                     {{if .IsLoggedIn}}
+                        <a href="/blocked-emails" class="py-2 px-4 bg-gray-500 text-white rounded hover:bg-gray-600 transition duration-300">Blocked Emails</a>
                         <span class="text-gray-600">{{.UserEmail}}</span>
                         <a href="/logout" class="py-2 px-4 bg-gray-500 text-white rounded hover:bg-gray-600 transition duration-300">Logout</a>
                     {{else}}
