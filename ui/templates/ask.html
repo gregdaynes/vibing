@@ -1,0 +1,30 @@
+{{define "content"}}
+<div class="max-w-2xl mx-auto">
+    <h1 class="text-3xl font-bold mb-8">Ask a Question</h1>
+    
+    <div class="bg-white p-8 rounded-lg shadow">
+        <form method="POST" action="/ask">
+            <div class="mb-6">
+                <label for="email" class="block text-gray-700 text-sm font-bold mb-2">Your Email Address</label>
+                <input type="email" name="email" id="email" required
+                    class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                    placeholder="Enter your email address">
+            </div>
+            
+            <div class="mb-6">
+                <label for="content" class="block text-gray-700 text-sm font-bold mb-2">Your Question</label>
+                <textarea name="content" id="content" rows="6" required
+                    class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                    placeholder="Type your question here..."></textarea>
+            </div>
+            
+            <div class="flex items-center justify-end">
+                <button type="submit"
+                    class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
+                    Submit Question
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{{end}} 
