@@ -5,10 +5,11 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
-
+	"path/filepath"
+	"questionapp/pkg/api"
 	"questionapp/pkg/handlers"
 	"questionapp/pkg/models"
+	"strconv"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
@@ -39,9 +40,8 @@ func main() {
 	}
 
 	// Check registration toggle
-	allowRegistration := os.Getenv("ALLOW_REGISTRATION")
-	if allowRegistration == "" {
-		allowRegistration = "false" // Default to disabling registration
+	allowRegistration, _ := strconv.ParseBool(os.Getenv("ALLOW_REGISTRATION"))
+	if !allowRegistration {
 		log.Println("Registration is disabled by default. Set ALLOW_REGISTRATION=true to enable new user registration.")
 	}
 
@@ -56,60 +56,27 @@ func main() {
 		SameSite: http.SameSiteLaxMode,
 	}
 
-	// Load templates
-	log.Println("Loading templates...")
-	templates := make(map[string]*template.Template)
-
-	// Define our template functions
-	funcMap := template.FuncMap{
-		"len": func(a interface{}) int {
-			switch v := a.(type) {
-			case []models.Answer:
-				return len(v)
-			case []models.AnswerWithEmail:
-				return len(v)
-			default:
-				return 0
-			}
-		},
-		"maskEmail": handlers.MaskEmail,
-	}
-
-	// Load each template paired with the layout
-	templateFiles := []string{
-		"home.html",
-		"login.html",
-		"ask.html",
-		"question.html",
-		"ask_form.html",
-		"blocked_emails.html",
-	}
-
-	for _, tf := range templateFiles {
-		t, err := template.New("layout.html").Funcs(funcMap).ParseFiles(
-			"ui/templates/layout.html",
-			"ui/templates/"+tf,
-		)
-		if err != nil {
-			log.Fatalf("Error parsing template %s: %v", tf, err)
-		}
-		templates[tf] = t
-	}
-
-	log.Println("Templates loaded successfully")
-
-	// Initialize the application
+	// Initialize application
 	app := &handlers.Application{
 		DB:                db,
 		Store:             store,
-		Templates:         templates,
-		AllowRegistration: strings.ToLower(allowRegistration) == "true",
+		Templates:         make(map[string]*template.Template),
+		AllowRegistration: allowRegistration,
 	}
+
+	// Load templates
+	err = app.LoadTemplates()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Initialize API
+	apiHandler := api.NewAPI(db)
 
 	// Create router
 	r := mux.NewRouter()
 
-	// Define routes
+	// Web routes
 	r.HandleFunc("/", app.Home).Methods("GET")
 	r.HandleFunc("/login", app.Login).Methods("GET", "POST")
 	r.HandleFunc("/logout", app.Logout).Methods("GET")
@@ -121,12 +88,44 @@ func main() {
 	r.HandleFunc("/block-email", app.BlockEmail).Methods("POST")
 	r.HandleFunc("/blocked-emails", app.BlockedEmails).Methods("GET")
 
+	// API documentation
+	r.HandleFunc("/api/docs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/static/swagger/index.html", http.StatusMovedPermanently)
+	}).Methods("GET")
+
+	// Serve OpenAPI specification
+	r.HandleFunc("/api/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/yaml")
+		http.ServeFile(w, r, filepath.Join("api", "openapi.yaml"))
+	}).Methods("GET")
+
+	// API routes with middleware
+	apiRouter := r.PathPrefix("/api").Subrouter()
+	apiRouter.Use(api.CORSMiddleware)
+
+	// Authentication endpoint
+	apiRouter.HandleFunc("/auth/login", apiHandler.Login).Methods("POST", "OPTIONS")
+
+	// Public API endpoints
+	apiRouter.HandleFunc("/questions", apiHandler.ListQuestions).Methods("GET", "OPTIONS")
+	apiRouter.HandleFunc("/questions", apiHandler.CreateQuestion).Methods("POST", "OPTIONS")
+	apiRouter.HandleFunc("/questions/{id:[0-9]+}", apiHandler.GetQuestion).Methods("GET", "OPTIONS")
+
+	// Protected API endpoints
+	protected := apiRouter.NewRoute().Subrouter()
+	protected.Use(api.AuthMiddleware)
+	protected.HandleFunc("/questions/{id:[0-9]+}", apiHandler.DeleteQuestion).Methods("DELETE", "OPTIONS")
+	protected.HandleFunc("/questions/{id:[0-9]+}/answers", apiHandler.CreateAnswer).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/blocked-emails", apiHandler.ListBlockedEmails).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/blocked-emails", apiHandler.BlockEmail).Methods("POST", "OPTIONS")
+
 	// Serve static files
-	fileServer := http.FileServer(http.Dir("./static/"))
+	fileServer := http.FileServer(http.Dir("./ui/static"))
 	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", fileServer))
 
 	// Start the server
 	log.Println("Starting server on :8080")
+	log.Println("API documentation available at http://localhost:8080/api/docs")
 	if err := http.ListenAndServe(":8080", r); err != nil {
 		log.Fatal(err)
 	}

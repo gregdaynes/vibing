@@ -1,0 +1,384 @@
+openapi: 3.0.0
+info:
+  title: Q&A API
+  description: |
+    API for managing questions, answers, and user blocking.
+    
+    ## Authentication
+    To use protected endpoints, you need to:
+    1. Get a JWT token by sending your credentials to `/api/auth/login`
+    2. Include the token in the Authorization header: `Authorization: Bearer your-token`
+  version: 1.0.0
+
+servers:
+  - url: /api
+    description: API base URL
+
+components:
+  schemas:
+    Question:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        content:
+          type: string
+        authorEmail:
+          type: string
+          format: email
+        createdAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        isAuthorBlocked:
+          type: boolean
+        answers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Answer'
+
+    Answer:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        content:
+          type: string
+        userEmail:
+          type: string
+          format: email
+        createdAt:
+          type: string
+          format: date-time
+
+    BlockedEmail:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        blockedAt:
+          type: string
+          format: date-time
+        blockedBy:
+          type: string
+          format: email
+        reason:
+          type: string
+        questions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Question'
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT token to be used for authentication
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: integer
+          format: int32
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+paths:
+  /auth/login:
+    post:
+      summary: Login to get JWT token
+      description: |
+        Authenticate with email and password to receive a JWT token.
+        Use this token in the Authorization header for protected endpoints.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /questions:
+    get:
+      summary: List all questions
+      description: Returns a list of questions, optionally filtered by various criteria
+      operationId: listQuestions
+      responses:
+        '200':
+          description: A list of questions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Question'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      summary: Create a new question
+      description: Creates a new question with the given content
+      operationId: createQuestion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - content
+              properties:
+                email:
+                  type: string
+                  format: email
+                content:
+                  type: string
+                  minLength: 10
+      responses:
+        '201':
+          description: Question created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                    format: int64
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Email is blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /questions/{id}:
+    get:
+      summary: Get a question by ID
+      description: |
+        Returns a single question by its ID, including all its answers.
+        
+        Authorization rules:
+        1. Deleted Questions:
+           - Only authenticated users can view deleted questions
+           - Deleted questions are only visible within 14 days of deletion
+           - After 14 days, the question returns a 404 Not Found
+        
+        2. Non-deleted Questions:
+           - Authenticated users can view all questions
+           - Unauthenticated users can only view questions that have at least one answer
+        
+        The response always includes the full question details and all its answers.
+      operationId: getQuestion
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Question found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Question'
+        '401':
+          description: |
+            Unauthorized - Authentication required for:
+            - Viewing deleted questions
+            - Viewing questions without answers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: |
+            Question not found. This can happen when:
+            - The question ID doesn't exist
+            - The question was deleted more than 14 days ago
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      summary: Delete a question
+      description: Soft deletes a question by its ID
+      operationId: deleteQuestion
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '204':
+          description: Question deleted successfully
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Question not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /questions/{id}/answers:
+    post:
+      summary: Add an answer to a question
+      description: Creates a new answer for the specified question
+      operationId: createAnswer
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - content
+              properties:
+                content:
+                  type: string
+                  minLength: 10
+      responses:
+        '201':
+          description: Answer created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                    format: int64
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /blocked-emails:
+    get:
+      summary: List blocked emails
+      description: Returns a list of blocked email addresses
+      operationId: listBlockedEmails
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: A list of blocked emails
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BlockedEmail'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      summary: Block an email address
+      description: Blocks an email address from asking questions
+      operationId: blockEmail
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - reason
+              properties:
+                email:
+                  type: string
+                  format: email
+                reason:
+                  type: string
+      responses:
+        '201':
+          description: Email blocked successfully
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error' 

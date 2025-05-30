@@ -665,3 +665,46 @@ func (app *Application) BlockedEmails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
+func (app *Application) LoadTemplates() error {
+	log.Println("Loading templates...")
+
+	// Define our template functions
+	funcMap := template.FuncMap{
+		"len": func(a interface{}) int {
+			switch v := a.(type) {
+			case []models.Answer:
+				return len(v)
+			case []models.AnswerWithEmail:
+				return len(v)
+			default:
+				return 0
+			}
+		},
+		"maskEmail": MaskEmail,
+	}
+
+	// Load each template paired with the layout
+	templateFiles := []string{
+		"home.html",
+		"login.html",
+		"ask.html",
+		"question.html",
+		"ask_form.html",
+		"blocked_emails.html",
+	}
+
+	for _, tf := range templateFiles {
+		t, err := template.New("layout.html").Funcs(funcMap).ParseFiles(
+			"ui/templates/layout.html",
+			"ui/templates/"+tf,
+		)
+		if err != nil {
+			return fmt.Errorf("error parsing template %s: %v", tf, err)
+		}
+		app.Templates[tf] = t
+	}
+
+	log.Println("Templates loaded successfully")
+	return nil
+}
