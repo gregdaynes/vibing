@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -23,10 +25,17 @@ type Application struct {
 
 // Template data structure
 type TemplateData struct {
-	IsLoggedIn bool
-	UserEmail  string
-	Data       interface{}
-	Funcs      template.FuncMap
+	IsLoggedIn   bool
+	UserEmail    string
+	Data         interface{}
+	Funcs        template.FuncMap
+	FlashMessage *FlashMessage
+}
+
+type FlashMessage struct {
+	Type    string // "success", "error", etc.
+	Title   string
+	Content string
 }
 
 // Get user session data
@@ -49,21 +58,18 @@ func (app *Application) getSessionData(r *http.Request) (bool, int, string) {
 func (app *Application) Home(w http.ResponseWriter, r *http.Request) {
 	log.Println("Handling home request")
 
-	isLoggedIn, _, email := app.getSessionData(r)
+	isLoggedIn, _, _ := app.getSessionData(r)
 
-	// Different query based on login status
 	var rows *sql.Rows
 	var err error
 
 	if isLoggedIn {
-		// Logged in users see all questions
 		rows, err = app.DB.Query(`
 			SELECT q.id, q.author_id, q.title, q.content, q.created_at 
 			FROM questions q 
 			ORDER BY q.created_at DESC
 		`)
 	} else {
-		// Non-logged in users only see questions with answers
 		rows, err = app.DB.Query(`
 			SELECT DISTINCT q.id, q.author_id, q.title, q.content, q.created_at 
 			FROM questions q 
@@ -91,10 +97,16 @@ func (app *Application) Home(w http.ResponseWriter, r *http.Request) {
 		questions = append(questions, q)
 	}
 
-	data := TemplateData{
-		IsLoggedIn: isLoggedIn,
-		UserEmail:  email,
-		Data:       questions,
+	data := app.newTemplateData(r)
+	data.Data = questions
+
+	// Check for flash message in URL parameters
+	if msgType := r.URL.Query().Get("msg_type"); msgType != "" {
+		data.FlashMessage = &FlashMessage{
+			Type:    msgType,
+			Title:   r.URL.Query().Get("msg_title"),
+			Content: r.URL.Query().Get("msg_content"),
+		}
 	}
 
 	err = app.Templates["home.html"].ExecuteTemplate(w, "layout", data)
@@ -175,12 +187,67 @@ func MaskEmail(email string) string {
 	return parts[0] + "@***"
 }
 
-// Update TemplateData to include helper functions
+// Helper function to set a flash message
+func (app *Application) setFlashMessage(w http.ResponseWriter, r *http.Request, msgType, title, content string) {
+	log.Printf("Attempting to set flash message: type=%s, title=%s", msgType, title)
+	session, err := app.Store.Get(r, "session-name")
+	if err != nil {
+		log.Printf("Error getting session: %v", err)
+		return
+	}
+
+	// Store the flash message in the session
+	session.Values["flash"] = FlashMessage{
+		Type:    msgType,
+		Title:   title,
+		Content: content,
+	}
+	log.Printf("Flash message stored in session.Values")
+
+	err = session.Save(r, w)
+	if err != nil {
+		log.Printf("Error saving session: %v", err)
+		return
+	}
+	log.Printf("Session saved successfully with flash message")
+}
+
+// Update template data creation to include flash messages
 func (app *Application) newTemplateData(r *http.Request) TemplateData {
+	log.Printf("Creating new template data")
 	isLoggedIn, _, email := app.getSessionData(r)
+
+	// Get flash message if any
+	var flashMessage *FlashMessage
+	session, err := app.Store.Get(r, "session-name")
+	if err != nil {
+		log.Printf("Error getting session in newTemplateData: %v", err)
+		return TemplateData{
+			IsLoggedIn: isLoggedIn,
+			UserEmail:  email,
+		}
+	}
+
+	// Check for flash message in session values
+	if flash, ok := session.Values["flash"].(FlashMessage); ok {
+		log.Printf("Found flash message in session: %+v", flash)
+		flashMessage = &flash
+		// Clear the flash message
+		delete(session.Values, "flash")
+		err = session.Save(r, nil)
+		if err != nil {
+			log.Printf("Error saving session after clearing flash: %v", err)
+		} else {
+			log.Printf("Flash message cleared from session")
+		}
+	} else {
+		log.Printf("No flash message found in session")
+	}
+
 	return TemplateData{
-		IsLoggedIn: isLoggedIn,
-		UserEmail:  email,
+		IsLoggedIn:   isLoggedIn,
+		UserEmail:    email,
+		FlashMessage: flashMessage,
 		Funcs: template.FuncMap{
 			"maskEmail": MaskEmail,
 		},
@@ -436,7 +503,12 @@ func (app *Application) SubmitQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	// Redirect with success message in URL parameters
+	redirectURL := fmt.Sprintf("/?msg_type=success&msg_title=%s&msg_content=%s",
+		url.QueryEscape("Question Submitted Successfully"),
+		url.QueryEscape("Your question has been submitted and you'll be notified by email when it receives an answer."))
+
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
 func (app *Application) Logout(w http.ResponseWriter, r *http.Request) {
